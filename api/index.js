@@ -2,75 +2,61 @@ export const config = {
   runtime: 'edge',
 };
 
-function getCorsHeaders(request) {
-  const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
-  const requestOrigin = request.headers.get('Origin');
-
-  let origin;
-
-  if (allowedOrigin === '*') {
-    // Allow all websites
-    origin = '*';
-  } else {
-    // Support multiple origins via comma separation
-    // e.g. ALLOWED_ORIGIN=https://site1.com,https://site2.com
-    const allowedOrigins = allowedOrigin.split(',').map(o => o.trim());
-
-    if (allowedOrigins.includes(requestOrigin)) {
-      origin = requestOrigin;  // reflect the matching origin
-    } else {
-      origin = null;  // block it
-    }
-  }
-
-  return {
-    'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Max-Age': '86400',
-    // Needed when origin is not '*' and you use cookies/auth
-    // 'Access-Control-Allow-Credentials': 'true',
-  };
-}
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',    // handles null origin too
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': '*',
+  'Access-Control-Max-Age': '86400',
+};
 
 export default async function handler(request) {
-  const corsHeaders = getCorsHeaders(request);
-
-  // Block disallowed origins
-  if (!corsHeaders['Access-Control-Allow-Origin']) {
-    return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
-      status: 403,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
   // Handle preflight
   if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: corsHeaders,
-    });
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
 
   const { searchParams } = new URL(request.url);
   const targetUrl = searchParams.get('url');
 
   if (!targetUrl) {
-    return new Response(JSON.stringify({ error: 'Missing url parameter' }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({
+        error: 'Missing url parameter',
+        usage: '/api/proxy?url=https://example.com/api/data',
+      }),
+      {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }
+    );
   }
 
   try {
-    const response = await fetch(decodeURIComponent(targetUrl));
+    // Forward the same method and body
+    const fetchOptions = {
+      method: request.method,
+      headers: {},
+    };
+
+    // Forward relevant headers to target
+    const contentType = request.headers.get('Content-Type');
+    if (contentType) {
+      fetchOptions.headers['Content-Type'] = contentType;
+    }
+
+    // Forward body for POST/PUT/PATCH
+    if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
+      fetchOptions.body = await request.text();
+    }
+
+    const response = await fetch(decodeURIComponent(targetUrl), fetchOptions);
     const data = await response.text();
 
     return new Response(data, {
       status: response.status,
       headers: {
         ...corsHeaders,
-        'Content-Type': response.headers.get('Content-Type') || 'application/xml',
+        'Content-Type': response.headers.get('Content-Type') || 'application/json',
       },
     });
   } catch (error) {
